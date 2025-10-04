@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Codeforces Dynamic Leaderboard</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter Font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* Slate-900 equivalent */
+            color: #e2e8f0;
+        }
+        /* Custom Loading Spinner for smooth UX */
+        .spinner {
+            border-top-color: #38bdf8;
+            border-left-color: #38bdf8;
+            animation: spin 1s infinite linear;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 min-h-screen flex flex-col items-center">
+
+    <!-- Header & Controls -->
+    <header class="text-center mb-6 w-full max-w-4xl">
+        <h1 class="text-4xl font-extrabold mb-3 
+                   text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-sky-500 tracking-tight">
+            Codeforces Dynamic Leaderboard
+        </h1>
+        <p class="text-slate-400 text-sm mb-4">Weighted problems solved over a selected time period (800-1600 rated problems)</p>
+        
+        <label for="dateRange" class="sr-only">Select Time Range</label>
+        <select id="dateRange" onchange="generateLeaderboard()"
+                class="bg-slate-800 text-white border border-slate-700 rounded-lg p-2.5 
+                       focus:ring-sky-500 focus:border-sky-500 shadow-lg transition duration-150 ease-in-out">
+            <option value="7">This Week (Last 7 Days)</option>
+            <option value="30" selected>This Month (Last 30 Days)</option>
+            <option value="180">Last Six Months</option>
+        </select>
+    </header>
+
+    <!-- Loading State -->
+    <div id="loading" class="flex items-center space-x-3 mt-12 p-4 bg-slate-800/50 rounded-lg shadow-xl">
+        <div class="spinner w-6 h-6 border-4 border-slate-700 border-solid rounded-full"></div>
+        <span class="text-lg font-medium text-sky-400">Fetching live data...</span>
+    </div>
+
+    <!-- Leaderboard Table Container -->
+    <div id="leaderboard-container" class="w-full max-w-6xl mt-6 p-2 bg-slate-800 rounded-xl shadow-2xl shadow-slate-900/50"
+         style="display:none;">
+        
+        <div class="overflow-x-auto rounded-lg">
+            <table id="leaderboard" class="w-full text-sm text-left text-slate-300">
+                <thead class="text-xs uppercase bg-slate-700 text-slate-100 sticky top-0">
+                    <tr>
+                        <th scope="col" class="py-3 px-4 rounded-tl-lg">Rank</th>
+                        <th scope="col" class="py-3 px-4 text-left">User</th>
+                        <th scope="col" class="py-3 px-4 text-center">Weighted Score</th>
+                        <th scope="col" class="py-3 px-4 text-center">Total Solved</th>
+                        <th scope="col" class="py-3 px-2 text-center">800</th>
+                        <th scope="col" class="py-3 px-2 text-center">900</th>
+                        <th scope="col" class="py-3 px-2 text-center">1000</th>
+                        <th scope="col" class="py-3 px-2 text-center">1100</th>
+                        <th scope="col" class="py-3 px-2 text-center">1200</th>
+                        <th scope="col" class="py-3 px-2 text-center">1300</th>
+                        <th scope="col" class="py-3 px-2 text-center">1400</th>
+                        <th scope="col" class="py-3 px-2 text-center">1500</th>
+                        <th scope="col" class="py-3 px-2 text-center">1600</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-700"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        // NOTE: Correcting the handle back to the user's specified format: "_wayfarer_"
+        const users = ["InFi4D_0", "Jonayed_fahim", "ahmedhussain_codeforce", "mongoose_in_town", "_wayfarer_"]; 
+        const ratingWeights = {
+            800: 0.8, 900: 0.9, 1000: 1.0, 1100: 1.1, 1200: 1.2, 
+            1300: 1.3, 1400: 1.4, 1500: 1.5, 1600: 1.6
+        };
+        const ratingKeys = Object.keys(ratingWeights).map(r => parseInt(r));
+        const CACHE = {}; // Cache for storing raw user submission data
+
+        // --- Helper Functions ---
+
+        /**
+         * Calculates the starting date (in Date object) for filtering submissions.
+         * @param {number} daysBack - Number of days to look back.
+         * @returns {Date} The starting date object.
+         */
+        const getStartDate = daysBack => {
+            const date = new Date();
+            // Subtract days and set time to midnight to ensure inclusive range start
+            date.setDate(date.getDate() - daysBack);
+            date.setHours(0, 0, 0, 0);
+            return date;
+        };
+
+        /**
+         * Fetches raw submission data for a single user, using cache if available.
+         * This function is now run concurrently for all users (fast fetching).
+         * @param {string} handle - Codeforces handle.
+         */
+        async function fetchUserSubmissions(handle) {
+            if (CACHE[handle]) {
+                return CACHE[handle];
+            }
+            
+            // Note: The Codeforces API does not need an 'end' date parameter.
+            const url = `https://codeforces.com/api/user.status?handle=${handle}&from=1&count=10000`;
+
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                
+                if (data.status !== 'OK') {
+                    console.error(`Error fetching ${handle}: ${data.comment}`);
+                    return [];
+                }
+
+                // Cache the full accepted list for fast lookups across different date ranges
+                const acceptedSubmissions = data.result.filter(sub => sub.verdict === 'OK');
+                CACHE[handle] = acceptedSubmissions;
+                return acceptedSubmissions;
+
+            } catch (error) {
+                console.error(`Network error for ${handle}:`, error);
+                return [];
+            }
+        }
+
+        /**
+         * Processes raw submissions for a user to calculate score and counts
+         * within the given time range, ensuring problem uniqueness.
+         * @param {string} handle - User handle.
+         * @param {Array<Object>} submissions - Raw accepted submissions for the user.
+         * @param {Date} startDate - The cutoff date for filtering.
+         */
+        function processUserData(handle, submissions, startDate) {
+            const ratingCount = Object.fromEntries(ratingKeys.map(r => [r, 0]));
+            let totalSolved = 0;
+            let weightedScore = 0;
+            const solvedProblems = new Set(); // To track unique problems solved
+
+            for (const s of submissions) {
+                const submissionDate = new Date(s.creationTimeSeconds * 1000);
+                if (submissionDate < startDate) continue;
+
+                const rating = s.problem.rating;
+                const problemKey = `${s.problem.contestId}-${s.problem.index}`;
+
+                // Check if problem is in our target rating range and is unique
+                if (rating && ratingWeights[rating] && !solvedProblems.has(problemKey)) {
+                    solvedProblems.add(problemKey);
+                    ratingCount[rating]++;
+                    totalSolved++;
+                    weightedScore += ratingWeights[rating];
+                }
+            }
+
+            return { handle, totalSolved, weightedScore, ratingCount };
+        }
+
+        // --- Main Execution ---
+
+        async function generateLeaderboard() {
+            const days = parseInt(document.getElementById('dateRange').value);
+            const startDate = getStartDate(days);
+            const loading = document.getElementById('loading');
+            const tableContainer = document.getElementById('leaderboard-container');
+            const tbody = document.querySelector('#leaderboard tbody');
+
+            // 1. Show loading state
+            loading.style.display = 'flex';
+            tableContainer.style.display = 'none';
+            
+            // 2. Fast Concurrent Fetching (Only runs network calls if not cached)
+            // This is the primary speed/smoothness improvement.
+            const rawSubmissionsPromises = users.map(fetchUserSubmissions);
+            const allRawSubmissions = await Promise.all(rawSubmissionsPromises);
+
+            // 3. Process Data
+            const results = users.map((handle, index) => {
+                const submissions = allRawSubmissions[index] || [];
+                return processUserData(handle, submissions, startDate);
+            });
+
+            // 4. Sort Results
+            results.sort((a, b) => {
+                // Primary sort: Weighted Score (desc)
+                if (b.weightedScore !== a.weightedScore) return b.weightedScore - a.weightedScore;
+                // Secondary sort: Total Solved (desc)
+                if (b.totalSolved !== a.totalSolved) return b.totalSolved - a.totalSolved;
+                // Tertiary sort: Original user order
+                return users.indexOf(a.handle) - users.indexOf(b.handle);
+            }); // REMOVED .filter(r => r.totalSolved > 0) to show all users
+
+            // 5. Render to DOM
+            tbody.innerHTML = results.map((r, idx) => {
+                const rankClass = idx === 0 ? "text-yellow-400 font-bold" :
+                                  idx === 1 ? "text-slate-200 font-medium" :
+                                  idx === 2 ? "text-amber-500 font-medium" : "text-slate-400";
+                
+                const weightedScoreText = r.weightedScore.toFixed(2);
+                
+                return `
+                    <tr class="hover:bg-slate-700/50 transition-colors duration-150 ease-in-out">
+                        <td class="py-3 px-4 ${rankClass}">${idx + 1}</td>
+                        <td class="py-3 px-4 text-left font-medium text-sky-400 hover:text-sky-300">
+                            <a href="https://codeforces.com/profile/${r.handle}" target="_blank" rel="noopener noreferrer">${r.handle}</a>
+                        </td>
+                        <td class="py-3 px-4 text-center text-lg font-extrabold 
+                            text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-green-500">
+                            ${weightedScoreText}
+                        </td>
+                        <td class="py-3 px-4 text-center text-slate-300">${r.totalSolved}</td>
+                        ${ratingKeys.map(rt => {
+                            const count = r.ratingCount[rt] || 0;
+                            const countClass = count > 0 ? "text-green-300" : "text-slate-600";
+                            return `<td class="py-3 px-2 text-center ${countClass}">${count}</td>`;
+                        }).join('')}
+                    </tr>
+                `;
+            }).join('');
+
+            // 6. Hide loading and show table
+            loading.style.display = 'none';
+            tableContainer.style.display = 'block';
+        }
+
+        // Initialize the leaderboard generation
+        // Note: Set default range to '30' days to align with the option selected attribute
+        document.getElementById('dateRange').value = '30';
+        generateLeaderboard();
+    </script>
+</body>
+</html>
